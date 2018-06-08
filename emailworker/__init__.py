@@ -5,6 +5,7 @@ import logging
 import logging.config
 import smtplib
 from configparser import ConfigParser
+from email.message import EmailMessage
 
 import pika
 
@@ -31,18 +32,24 @@ def setup():
         for key, value in config[section].items():
             logger.info('config: [%s] %s = %r', section, key, value)
 
-def sendemail(fromaddr, toaddrs, msg):
+def sendemail(fromaddr, toaddrs, body, subject=None):
     """
     Send email using configured smtp_host.
     """
+    emailmessage = EmailMessage()
+    emailmessage['From'] = fromaddr
+    emailmessage['To'] = toaddrs
+    emailmessage['Subject'] = subject or ''
+    emailmessage.set_content(body)
     if not config['emailworker'].getboolean('dryrun'):
         server = smtplib.SMTP(config['emailworker']['smtp_host'])
-        server.sendmail(fromaddr, toaddrs, msg)
+        server.send_message(emailmessage)
         server.quit()
     logger = logging.getLogger('emailworker.send')
-    logger.info('fromaddr = %r, toaddrs = %r, msg = %r', fromaddr, toaddrs, msg)
+    logger.info('fromaddr = %r, toaddrs = %r, body = %r, subject = %r',
+                fromaddr, toaddrs, body, subject)
 
-def publish(fromaddr, toaddrs, msg):
+def publish(fromaddr, toaddrs, body, subject=None):
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(host=config['emailworker']['rabbitmq_host'])
     )
@@ -54,7 +61,8 @@ def publish(fromaddr, toaddrs, msg):
             dict(
                 fromaddr = fromaddr,
                 toaddrs = toaddrs,
-                msg = msg
+                body = body,
+                subject = subject,
             )
         )
     )
@@ -99,7 +107,8 @@ def main():
     subparser = subparsers.add_parser('publish')
     subparser.add_argument('fromaddr')
     subparser.add_argument('toaddrs')
-    subparser.add_argument('msg')
+    subparser.add_argument('--subject', default='')
+    subparser.add_argument('body')
     subparser.set_defaults(func=publish)
 
     subparser = subparsers.add_parser('start')
