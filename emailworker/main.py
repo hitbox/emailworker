@@ -1,62 +1,146 @@
 import argparse
+import inspect
+import json
 import logging
+import logging.config
 import sys
 from pathlib import Path
+from configparser import ConfigParser
 
-import pynssm.cli
+import pika
 
-from .config import Config
-from .config import DefaultConfig
+from .config import Config, DefaultConfig
 from .util import bind_and_call
-from .util import stripkeys
 from .worker import Worker
 
-PROG = 'emailworker'
-
-def startworker():
+def load_config(config, rabbitmq_config):
     """
-    Configure and start `emailworker.Worker` instance.
+    Load application config from `config` and RabbitMQ config from
+    `rabbitmq_config`, returning `configparser.ConfigParser` object with loaded
+    values.
+
+    :param config: Path to app config file.
+    :type config: pathlib.Path, str
+
+    :param rabbitmq_config: Path to RabbitMQ config file.
+    :type rabbitmq_config: pathlib.Path, str
     """
-    config = Config()
-    config.from_object(DefaultConfig)
+    _config = Config()
+    _config.from_object(DefaultConfig)
 
-    path = Path(__file__).parent.parent.absolute() / "instance" / "config.py"
-    if path.exists():
-        config.from_pyfile(path)
+    if Path(config).exists():
+        _config.from_pyfile(config)
 
-    logger = logging.getLogger('emailworker')
-    if 'LOGGING_CONF_DICT' in config:
-        logging.config.dictConfig(config['LOGGING_CONF_DICT'])
-        logger.debug('dict config loaded')
+    if 'LOGGING_CONF_DICT' in _config:
+        logging.config.dictConfig(_config['LOGGING_CONF_DICT'])
 
-    logger.debug('config: %r', config)
-    worker = Worker(config['RABBITMQ_HOST'], config['SMTP_HOST'], config['QUEUE'])
+    rmq_config = ConfigParser()
+    rmq_config.read(rabbitmq_config)
+    _config.update(**rmq_config)
+
+    return _config
+
+def start_worker(config):
+    """
+    Start emailworker to consume messages and send emails.
+
+    :param config: Mapping of RabbitMQ configuration.
+    :type config: mapping
+    """
+    worker = Worker(
+        config['connection_parameters']['host'],
+        config['connection_parameters']['virtual_host'],
+        config['credentials']['username'],
+        config['credentials']['password'],
+        config['queue_bind']['exchange'],
+        config['SMTP_HOST'],
+    )
     worker.start()
+
+def send(config, messagebody, count=1):
+    """
+    Send a test email message to workers.
+    """
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(
+            host = config['connection_parameters']['host'],
+            virtual_host = config['connection_parameters']['virtual_host'],
+            credentials = pika.PlainCredentials(
+                username = config['credentials']['username'],
+                password = config['credentials']['password'],
+            )
+        )
+    )
+
+    channel = connection.channel()
+
+    for _ in range(count):
+        channel.basic_publish(
+            exchange = config['queue_bind']['exchange'],
+            routing_key = config['queue_bind']['exchange'],
+            body = json.dumps(messagebody),
+        )
+
 
 def main():
     """
-    Email Worker.
+    Pika email worker.
     """
-    parser = argparse.ArgumentParser(prog=PROG, description=main.__doc__,
-            formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    instancedir = Path(__file__).parent.parent / 'instance'
+    parser = argparse.ArgumentParser(prog='emailworker', description=main.__doc__)
+
+    parser.add_argument(
+        '--config',
+        default = instancedir / 'config.py',
+        help = 'Worker config file. Default: %(default)s')
+
+    parser.add_argument(
+        '--rabbitmq-config',
+        default = instancedir / 'rabbitmq.ini',
+        help = 'RabbitMQ config file. Default: %(default)s')
 
     subparsers = parser.add_subparsers()
-    service_group = subparsers.add_parser('service')
 
-    pynssm.cli.add_pythonapp_nssm_parsers(
-        Path(__file__).parent.parts[-1],
-        service_group,
-        'worker',
-        'start',
-        as_module=True,
-        formatter_class = argparse.ArgumentDefaultsHelpFormatter
+    start_parser = subparsers.add_parser('start')
+    start_parser.set_defaults(func=start_worker)
+
+    send_parser = subparsers.add_parser('send')
+    # Message from config argument
+    send_parser.add_argument(
+        '--message',
+        default = instancedir / 'testemail.ini',
+        help = 'Config file to get message body from. Default: %(default)s'
     )
-
-    worker_group = subparsers.add_parser('worker')
-    subparser = worker_group.add_subparsers()
-    subparser = subparser.add_parser('start')
-    subparser.set_defaults(func=startworker)
+    # Count option
+    parameter = inspect.signature(send).parameters['count']
+    send_parser.add_argument(
+        '-C', '--count',
+        metavar = 'N',
+        default = parameter.default,
+        type = type(parameter.default),
+        help = 'Send %(metavar)s emails. Default: %(default)s')
+    send_parser.set_defaults(func=send)
 
     args = parser.parse_args()
 
-    rv = bind_and_call(args.func, stripkeys(vars(args), 'func'))
+    if 'func' not in args:
+        args.func = start_worker
+    func = args.func
+    # none of the funcs expect themselves as an argument
+    del args.func
+
+    # add messagebody attribute from file and remove message attribute.
+    if 'message' in args:
+        args.messagebody = ConfigParser()
+        args.messagebody.read(args.message)
+        args.messagebody = dict(args.messagebody['email'].items())
+        del args.message
+        print(args.messagebody)
+        return
+
+    # replace args.config with the object that the funcs expect and remove
+    # rabbitmq_config that none of them expect, so that they get any of the
+    # remaining args and kwargs.
+    args.config = load_config(str(args.config), str(args.rabbitmq_config))
+    del args.rabbitmq_config
+    sys.exit(bind_and_call(func, vars(args)))

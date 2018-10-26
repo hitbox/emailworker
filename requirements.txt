@@ -1,2 +1,2 @@
 pika
--e ../pynssm
+#-e ../pynssm

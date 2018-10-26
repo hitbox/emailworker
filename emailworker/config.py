@@ -11,6 +11,7 @@ class Config(dict):
         :param filename: Path to `.py` file.
         :type filename: str or pathlib.Path
         """
+        filename = str(filename)
         d = types.ModuleType('config')
         d.__file__ = filename
         with open(filename, 'rb') as config_file:
@@ -33,6 +34,4 @@ class DefaultConfig:
     """
     Configuration for use with RabbitMQ and SMTP running on localhost.
     """
-    RABBITMQ_HOST = 'localhost'
     SMTP_HOST = 'localhost'
-    QUEUE = 'emails'
