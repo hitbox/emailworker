@@ -28,10 +28,3 @@ class Config(dict):
         for key in dir(obj):
             if key.isupper():
                 self[key] = getattr(obj, key)
-
-
-class DefaultConfig:
-    """
-    Configuration for use with RabbitMQ and SMTP running on localhost.
-    """
-    SMTP_HOST = 'localhost'

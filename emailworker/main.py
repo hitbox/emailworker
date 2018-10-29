@@ -9,7 +9,7 @@ from configparser import ConfigParser
 
 import pika
 
-from .config import Config, DefaultConfig
+from .config import Config
 from .util import bind_and_call
 from .worker import Worker
 
@@ -26,7 +26,6 @@ def load_config(config, rabbitmq_config):
     :type rabbitmq_config: pathlib.Path, str
     """
     _config = Config()
-    _config.from_object(DefaultConfig)
 
     if Path(config).exists():
         _config.from_pyfile(config)
@@ -101,10 +100,10 @@ def main():
 
     subparsers = parser.add_subparsers()
 
-    start_parser = subparsers.add_parser('start')
+    start_parser = subparsers.add_parser('start', help='Start worker. (default)')
     start_parser.set_defaults(func=start_worker)
 
-    send_parser = subparsers.add_parser('send')
+    send_parser = subparsers.add_parser('send', help='Send an email.')
     # Message from config argument
     send_parser.add_argument(
         '--message',
